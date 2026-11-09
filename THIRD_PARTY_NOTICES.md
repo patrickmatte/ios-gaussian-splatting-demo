@@ -8,7 +8,7 @@ restrict the licenses granted by those projects.
 
 - Voxelio fork: <https://github.com/Voxelio-app/msplat>
 - Upstream: <https://github.com/rayanht/msplat>
-- Pinned revision: `d620d9c58d270e7de9e34a9d8a85dcf938a5070d`
+- Pinned revision: `6382593ec0bc9e54a098d3eb6e5bcdef0fad62c9`
 - License: Apache-2.0
 
 The fork vendors nlohmann/json under the MIT License and nanoflann under the

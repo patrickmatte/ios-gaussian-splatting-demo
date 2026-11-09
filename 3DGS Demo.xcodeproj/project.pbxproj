@@ -356,7 +356,7 @@
 			repositoryURL = "https://github.com/Voxelio-app/msplat.git";
 			requirement = {
 				kind = revision;
-				revision = d620d9c58d270e7de9e34a9d8a85dcf938a5070d;
+				revision = 6382593ec0bc9e54a098d3eb6e5bcdef0fad62c9;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
