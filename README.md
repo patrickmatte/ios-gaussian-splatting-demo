@@ -107,7 +107,7 @@ five-view technical minimum.
 | Component | Purpose | Source |
 | --- | --- | --- |
 | SwiftUI + ARKit | App UI and camera tracking | Apple system frameworks |
-| msplat | On-device 3DGS training | [`Voxelio-app/msplat`](https://github.com/Voxelio-app/msplat) |
+| msplat | On-device 3DGS training | [`patrickmatte/msplat`](https://github.com/patrickmatte/msplat) |
 | RealityKit | Real-time Gaussian rendering | Apple system framework |
 
 msplat is the only package dependency and is pinned to a reviewed commit

@@ -6,7 +6,8 @@ restrict the licenses granted by those projects.
 
 ## msplat
 
-- Voxelio fork: <https://github.com/Voxelio-app/msplat>
+- Fork used here: <https://github.com/patrickmatte/msplat>, branched from the
+  Voxelio fork <https://github.com/Voxelio-app/msplat>
 - Upstream: <https://github.com/rayanht/msplat>
 - Pinned revision: `6382593ec0bc9e54a098d3eb6e5bcdef0fad62c9`
 - License: Apache-2.0

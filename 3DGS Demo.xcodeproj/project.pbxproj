@@ -353,7 +353,7 @@
 /* Begin XCRemoteSwiftPackageReference section */
 		A20000000000000000000001 /* XCRemoteSwiftPackageReference "msplat" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Voxelio-app/msplat.git";
+			repositoryURL = "https://github.com/patrickmatte/msplat.git";
 			requirement = {
 				kind = revision;
 				revision = 6382593ec0bc9e54a098d3eb6e5bcdef0fad62c9;
