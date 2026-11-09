@@ -8,11 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* Msplat in Frameworks */ = {isa = PBXBuildFile; productRef = A30000000000000000000001 /* Msplat */; };
-		A10000000000000000000002 /* MetalSplatter in Frameworks */ = {isa = PBXBuildFile; productRef = A30000000000000000000002 /* MetalSplatter */; };
-		A10000000000000000000003 /* SplatIO in Frameworks */ = {isa = PBXBuildFile; productRef = A30000000000000000000003 /* SplatIO */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		815CEA9C30924ACF00AA0E1C /* msplat */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = msplat; path = "/Users/patrickmatte/Documents/code/mssplat voxelio/msplat"; sourceTree = "<absolute>"; };
 		885056C03008438D0037D7B2 /* 3DGS Demo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "3DGS Demo.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -30,8 +29,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000001 /* Msplat in Frameworks */,
-				A10000000000000000000002 /* MetalSplatter in Frameworks */,
-				A10000000000000000000003 /* SplatIO in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -42,6 +39,7 @@
 			isa = PBXGroup;
 			children = (
 				885056C23008438D0037D7B2 /* 3DGS Demo */,
+				815CEA9C30924ACF00AA0E1C /* msplat */,
 				885056C13008438D0037D7B2 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -75,8 +73,6 @@
 			name = "3DGS Demo";
 			packageProductDependencies = (
 				A30000000000000000000001 /* Msplat */,
-				A30000000000000000000002 /* MetalSplatter */,
-				A30000000000000000000003 /* SplatIO */,
 			);
 			productName = "3DGS Demo";
 			productReference = 885056C03008438D0037D7B2 /* 3DGS Demo.app */;
@@ -90,7 +86,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2650;
-				LastUpgradeCheck = 2650;
+				LastUpgradeCheck = 2710;
 				TargetAttributes = {
 					885056BF3008438D0037D7B2 = {
 						CreatedOnToolsVersion = 26.5;
@@ -108,7 +104,6 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A20000000000000000000001 /* XCRemoteSwiftPackageReference "msplat" */,
-				A20000000000000000000002 /* XCRemoteSwiftPackageReference "MetalSplatter" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 885056C13008438D0037D7B2 /* Products */;
@@ -176,6 +171,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 966T99893B;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -193,12 +189,13 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -239,6 +236,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 966T99893B;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -250,11 +248,12 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
 			};
@@ -267,9 +266,10 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 4FXXWGKALG;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/Info-FileSharing.plist";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Capture images and camera poses for on-device Gaussian Splat training.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -300,9 +300,10 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 4FXXWGKALG;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/Info-FileSharing.plist";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Capture images and camera poses for on-device Gaussian Splat training.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -358,14 +359,6 @@
 				revision = d620d9c58d270e7de9e34a9d8a85dcf938a5070d;
 			};
 		};
-		A20000000000000000000002 /* XCRemoteSwiftPackageReference "MetalSplatter" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Voxelio-app/MetalSplatter.git";
-			requirement = {
-				kind = revision;
-				revision = 848df6b6e3e9396812c22a7cf74d0702b6f77484;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -373,16 +366,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A20000000000000000000001 /* XCRemoteSwiftPackageReference "msplat" */;
 			productName = Msplat;
-		};
-		A30000000000000000000002 /* MetalSplatter */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A20000000000000000000002 /* XCRemoteSwiftPackageReference "MetalSplatter" */;
-			productName = MetalSplatter;
-		};
-		A30000000000000000000003 /* SplatIO */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A20000000000000000000002 /* XCRemoteSwiftPackageReference "MetalSplatter" */;
-			productName = SplatIO;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

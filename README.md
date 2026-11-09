@@ -2,7 +2,7 @@
 
 A small, source-transparent iOS reference project for capturing a scene with
 ARKit, training a 3D Gaussian Splat on device with msplat, and rendering the
-result in real time with MetalSplatter.
+result in real time with RealityKit.
 
 > Prefer using the finished scanning workflow instead of building it?
 > [Download Voxelio on the App Store](https://www.voxelio.app/go/github).
@@ -28,8 +28,10 @@ result in real time with MetalSplatter.
 2. Samples an optional LiDAR depth seed cloud when scene depth is available.
 3. Writes a Nerfstudio-style dataset entirely on device.
 4. Trains a Gaussian Splat locally with msplat at a selectable 1K–5K target.
-5. Saves a resumable checkpoint and converts the trained PLY to SPZ.
-6. Renders the SPZ at interactive frame rates with MetalSplatter.
+5. Saves a resumable checkpoint and the splat as a compressed PLY (the
+   SuperSplat/PlayCanvas format), in metres in the capture's frame.
+6. Renders the splat at interactive frame rates with RealityKit's Gaussian
+   splat component.
 7. Keeps every project in the app's Documents directory for later viewing or
    sharing.
 
@@ -38,7 +40,7 @@ result in real time with MetalSplatter.
 - Keep the complete Gaussian pipeline inspectable from Swift through Metal.
 - Demonstrate a focused SwiftUI and ARKit architecture suitable for learning.
 - Store scans locally and make training progress understandable.
-- Export a compact SPZ result that can be shared from the app.
+- Export a compact compressed PLY that can be shared from the app.
 - Avoid analytics, accounts, cloud processing, and proprietary app services.
 
 ## Architecture
@@ -49,9 +51,8 @@ flowchart LR
     B --> C["Nerfstudio-style dataset"]
     C --> D["msplat on-device training"]
     D --> E["Gaussian PLY"]
-    E --> F["SplatIO conversion"]
-    F --> G["SPZ asset"]
-    G --> H["MetalSplatter renderer"]
+    E --> F["Compressed PLY"]
+    F --> G["RealityKit renderer"]
 ```
 
 The implementation is intentionally split by responsibility:
@@ -60,8 +61,8 @@ The implementation is intentionally split by responsibility:
 | --- | --- |
 | `Capture/` | ARKit session, frame selection, JPEG/pose writing, and LiDAR seed sampling |
 | `Models/` | Persistent local project metadata and package lifecycle |
-| `Training/` | msplat configuration, progress previews, checkpoints, and SPZ conversion |
-| `Viewer/` | MetalSplatter loading, orbit, zoom, reset, and reveal animation |
+| `Training/` | msplat configuration, pose solving, checkpoints, and compressed PLY writing |
+| `Viewer/` | Splat loading (compressed PLY, and SPZ from older scans), orbit, pan, and zoom |
 | `Views/` | Project detail, training controls, export, and full-screen viewer |
 
 ## On-device data schema
@@ -79,7 +80,7 @@ Each capture becomes a self-contained package under
 │   └── ...
 ├── points3D.ply              # Optional ARKit scene-depth seed cloud
 ├── training-2000.ckpt        # Resumable msplat state for the completed target
-└── trained-2000.spz          # Shareable Gaussian Splat result
+└── trained-2000.compressed.ply  # Shareable Gaussian Splat result
 ```
 
 `transforms.json` uses the camera fields expected by msplat's
@@ -95,7 +96,7 @@ Each capture becomes a self-contained package under
 5. Finish after at least five saved views, choose a training target, and tap
    **Start training**.
 6. Keep the app open while training. When it finishes, orbit or pinch the result
-   in the viewer and use **Share SPZ** to export it.
+   in the viewer and use **Share splat** to export it.
 
 Start with the 1K target while testing the pipeline. A wider range of stable,
 overlapping viewpoints generally produces a more useful result than the
@@ -107,15 +108,14 @@ five-view technical minimum.
 | --- | --- | --- |
 | SwiftUI + ARKit | App UI and camera tracking | Apple system frameworks |
 | msplat | On-device 3DGS training | [`Voxelio-app/msplat`](https://github.com/Voxelio-app/msplat) |
-| MetalSplatter | Real-time Gaussian rendering | [`Voxelio-app/MetalSplatter`](https://github.com/Voxelio-app/MetalSplatter) |
-| SplatIO | PLY/SPZ loading and conversion | Included with MetalSplatter |
+| RealityKit | Real-time Gaussian rendering | Apple system framework |
 
-Direct package dependencies are pinned to reviewed commit revisions. Transitive
-versions are recorded in `Package.resolved`.
+msplat is the only package dependency and is pinned to a reviewed commit
+revision.
 
 ## Requirements
 
-- An iPhone or iPad running iOS 18 or later.
+- An iPhone or iPad running iOS 27 or later.
 - An Xcode release with Swift 6.1 package support.
 - A physical device for camera capture and performance validation.
 
@@ -129,7 +129,7 @@ ARKit capture and on-device training experience.
 - [x] ARKit capture and dataset writer
 - [x] On-device training and checkpoint resume
 - [x] Persistent local scan library
-- [x] MetalSplatter viewer and SPZ export
+- [x] RealityKit viewer and compressed PLY export
 - [ ] Architecture artwork and sample scan
 
 ## License

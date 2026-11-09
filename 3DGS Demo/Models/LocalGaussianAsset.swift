@@ -39,6 +39,8 @@ nonisolated struct LocalGaussianAsset: Identifiable, Codable, Hashable, Sendable
     var seedPointCount: Int
     var stage: LocalGaussianStage
     var completedSteps: Int?
+    var splatCount: Int?
+    var trainingOptions: LocalGaussianTrainingOptions?
     var failure: String?
 
     private enum CodingKeys: String, CodingKey {
@@ -50,6 +52,8 @@ nonisolated struct LocalGaussianAsset: Identifiable, Codable, Hashable, Sendable
         case seedPointCount = "pointCount"
         case stage = "status"
         case completedSteps = "trainingIterations"
+        case splatCount
+        case trainingOptions
         case failure = "errorMessage"
     }
 
@@ -60,6 +64,29 @@ nonisolated struct LocalGaussianAsset: Identifiable, Codable, Hashable, Sendable
         )
     }
 
+    /// Size of the captured photos, from the camera list (1920x1440 for video frames, about 4032x3024 for
+    /// high-resolution photos). Read once per scan.
+    var frameSize: (width: Double, height: Double) {
+        let key = transformsURL.path as NSString
+        if let cached = LocalGaussianAsset.frameSizeCache.object(forKey: key) {
+            return (cached.width, cached.height)
+        }
+        var size = (width: 1920.0, height: 1440.0)
+        if let data = try? Data(contentsOf: transformsURL),
+           let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let w = root["w"] as? Double, let h = root["h"] as? Double, w > 0, h > 0 {
+            size = (w, h)
+            LocalGaussianAsset.frameSizeCache.setObject(FrameSizeBox(width: w, height: h), forKey: key)
+        }
+        return size
+    }
+
+    private final class FrameSizeBox {
+        let width: Double, height: Double
+        init(width: Double, height: Double) { self.width = width; self.height = height }
+    }
+    nonisolated(unsafe) private static let frameSizeCache = NSCache<NSString, FrameSizeBox>()
+
     var metadataURL: URL { folderURL.appendingPathComponent("scan.json") }
     var imagesURL: URL { folderURL.appendingPathComponent("images", isDirectory: true) }
     var transformsURL: URL { folderURL.appendingPathComponent("transforms.json") }
@@ -68,10 +95,13 @@ nonisolated struct LocalGaussianAsset: Identifiable, Codable, Hashable, Sendable
     var legacySplatURL: URL { folderURL.appendingPathComponent("trained.spz") }
     var legacyCheckpointURL: URL { folderURL.appendingPathComponent("training.ckpt") }
 
+    /// The trained splat: a compressed PLY (`CompressedPLY`), or an SPZ for scans trained before.
     var splatURL: URL {
         guard let completedSteps else { return legacySplatURL }
         let versionedURL = splatURL(for: completedSteps)
-        return FileManager.default.fileExists(atPath: versionedURL.path) ? versionedURL : legacySplatURL
+        if FileManager.default.fileExists(atPath: versionedURL.path) { return versionedURL }
+        let olderURL = folderURL.appendingPathComponent("trained-\(completedSteps).spz")
+        return FileManager.default.fileExists(atPath: olderURL.path) ? olderURL : legacySplatURL
     }
 
     var checkpointURL: URL {
@@ -81,7 +111,7 @@ nonisolated struct LocalGaussianAsset: Identifiable, Codable, Hashable, Sendable
     }
 
     func splatURL(for iterations: Int) -> URL {
-        folderURL.appendingPathComponent("trained-\(iterations).spz")
+        folderURL.appendingPathComponent("trained-\(iterations)\(CompressedPLY.fileSuffix)")
     }
 
     func checkpointURL(for iterations: Int) -> URL {
@@ -191,6 +221,8 @@ final class LocalGaussianLibrary: ObservableObject {
             seedPointCount: capture.seedPointCount,
             stage: .captured,
             completedSteps: nil,
+            splatCount: nil,
+            trainingOptions: nil,
             failure: nil
         )
         try persist(asset)
@@ -210,10 +242,20 @@ final class LocalGaussianLibrary: ObservableObject {
     }
 
     @discardableResult
-    func finishProcessing(id: UUID, steps: Int) -> Bool {
+    func finishProcessing(id: UUID, steps: Int, splatCount: Int, options: LocalGaussianTrainingOptions) -> Bool {
         mutate(id: id) {
             $0.stage = .ready
             $0.completedSteps = steps
+            $0.splatCount = splatCount
+            $0.trainingOptions = options
+            $0.failure = nil
+        }
+    }
+
+    /// The user stopped a run: back to what the scan was before it started.
+    func cancelProcessing(id: UUID) {
+        mutate(id: id) {
+            $0.stage = $0.hasSplat ? .ready : .captured
             $0.failure = nil
         }
     }

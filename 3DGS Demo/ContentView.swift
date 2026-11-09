@@ -97,6 +97,9 @@ private struct GaussianAssetRow: View {
                     if let steps = asset.completedSteps {
                         Label(steps.formatted(), systemImage: "cpu")
                     }
+                    if let splats = asset.splatCount {
+                        Label(splats.formatted(), systemImage: "circle.hexagongrid")
+                    }
                 }
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)

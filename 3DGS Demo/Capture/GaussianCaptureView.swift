@@ -2,7 +2,9 @@
 // Licensed under the PolyForm Noncommercial License 1.0.0.
 
 import ARKit
+import AVFoundation
 import CoreImage
+import CoreImage.CIFilterBuiltins
 import ImageIO
 import RealityKit
 import SwiftUI
@@ -22,10 +24,58 @@ struct GaussianCaptureView: View {
     @State private var status = "Move around the subject and keep it in view."
     @State private var errorMessage: String?
     @State private var asksToDiscard = false
+    @State private var cameraAccess = AVCaptureDevice.authorizationStatus(for: .video)
+    /// What the camera session is doing, shown under the title so a black preview can be told apart:
+    /// no permission, no frames, interrupted, or an error.
+    @State private var cameraState = "Starting the camera…"
+    /// Distance from the camera to what is in the middle of the view, from the LiDAR depth, in metres.
+    @State private var subjectDistance: Float?
+    /// Exposure compensation in stops. Windows and reflections clip to pure white at 0 and the trainer then
+    /// paints them as blown-out patches; a negative value keeps their detail. Remembered between captures.
+    @AppStorage("captureExposureBias") private var exposureBias = -1.0
+    /// Share of the view that is clipped to white, 0...1.
+    @State private var blownOutShare: Float = 0
+    /// Asks ARKit for HDR video. Experimental: whether the frames come out better is for a test capture to show.
+    @AppStorage("captureHDRVideo") private var hdrVideo = false
+    /// What the camera is actually delivering after the HDR switch.
+    @State private var hdrReport: CaptureHDRReport?
+    /// Takes a full-resolution photo (about 12 MP, the camera's still pipeline) for every view instead of using the
+    /// 1920x1440 video frame. Development only: on a 579-photo capture the photos were twice as sharp as video frames,
+    /// but each shot is tone-mapped on its own and the splat kept only 15% of their fine detail (31% from video), so it
+    /// came out no sharper, and Object Capture took 5.4 minutes on the full-size photos. Release builds use video frames.
+    @AppStorage("captureHighResPhotos") private var highResPhotos = false
+    @State private var highResReport: CaptureHDRReport?
+
+    /// Whether this capture takes photos: only in development builds, whatever was left on during testing.
+    private var usesHighResPhotos: Bool {
+        #if DEBUG
+        highResPhotos
+        #else
+        false
+        #endif
+    }
 
     var body: some View {
         Group {
-            if ARWorldTrackingConfiguration.isSupported {
+            if cameraAccess == .denied || cameraAccess == .restricted {
+                ContentUnavailableView {
+                    Label("Camera access is off", systemImage: "camera.fill")
+                } description: {
+                    Text("Allow the camera for this app in Settings to capture views.")
+                } actions: {
+                    Button("Open Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("Close") { dismiss() }
+                }
+            } else if cameraAccess == .notDetermined {
+                ProgressView("Waiting for camera permission…")
+                    .tint(.white)
+                    .foregroundStyle(.white)
+            } else if ARWorldTrackingConfiguration.isSupported {
                 camera
             } else {
                 ContentUnavailableView(
@@ -36,6 +86,13 @@ struct GaussianCaptureView: View {
             }
         }
         .background(Color.black)
+        .task {
+            // Ask first, so a refusal shows a message instead of a black screen.
+            if cameraAccess == .notDetermined {
+                _ = await AVCaptureDevice.requestAccess(for: .video)
+                cameraAccess = AVCaptureDevice.authorizationStatus(for: .video)
+            }
+        }
         .alert("Discard capture?", isPresented: $asksToDiscard) {
             Button("Discard", role: .destructive) { dismiss() }
             Button("Keep capturing", role: .cancel) {}
@@ -57,7 +114,21 @@ struct GaussianCaptureView: View {
                 minimumConfidence: 1,
                 maximumDepth: 5,
                 onProgress: receive,
-                onFinish: finish
+                onFinish: finish,
+                onCameraState: { cameraState = $0 },
+                onDistance: { subjectDistance = $0 },
+                onClipping: { blownOutShare = $0 },
+                onHDR: { report in
+                    hdrReport = report
+                    if report.fellBack { hdrVideo = false }
+                },
+                onHighRes: { report in
+                    highResReport = report
+                    if report.fellBack { highResPhotos = false }
+                },
+                exposureBias: Float(exposureBias),
+                hdr: hdrVideo,
+                highRes: usesHighResPhotos
             )
             .ignoresSafeArea()
 
@@ -127,6 +198,54 @@ struct GaussianCaptureView: View {
                 .foregroundStyle(.secondary)
             }
 
+            if let hint = clippingHint {
+                Label(hint, systemImage: "sun.max.trianglebadge.exclamationmark")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+            }
+
+            HStack(spacing: 10) {
+                Image(systemName: "sun.min")
+                Slider(value: $exposureBias, in: -3...1, step: 0.25)
+                Image(systemName: "sun.max")
+                Text(String(format: "%+.2g EV", exposureBias))
+                    .font(.caption.monospacedDigit())
+                    .frame(width: 58, alignment: .trailing)
+            }
+            .foregroundStyle(.secondary)
+            .disabled(isFinishing)
+
+            VStack(spacing: 2) {
+                Toggle("HDR video (experimental)", isOn: $hdrVideo)
+                    .font(.footnote)
+                    .disabled(isRecording || isFinishing)
+                if let report = hdrReport, hdrVideo || report.fellBack {
+                    Text(report.text)
+                        .font(.caption2)
+                        .foregroundStyle(report.isActive ? Color.secondary : Color.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                #if DEBUG
+                Toggle("High-resolution photos (development)", isOn: $highResPhotos)
+                    .font(.footnote)
+                    .disabled(isRecording || isFinishing)
+                if let report = highResReport, highResPhotos || report.fellBack {
+                    Text(report.text)
+                        .font(.caption2)
+                        .foregroundStyle(report.isActive ? Color.secondary : Color.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                #endif
+            }
+
+            if let hint = distanceHint {
+                Label(hint, systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+            }
+
             Text(status)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -163,6 +282,20 @@ struct GaussianCaptureView: View {
         .padding(.bottom, 24)
     }
 
+    /// Close-up captures are the hardest on camera tracking: a few millimetres of position error is several
+    /// pixels at 0.4 m and half that at 1 m. Tell the user while they can still change it.
+    private var distanceHint: String? {
+        guard let distance = subjectDistance, distance > 0.05, distance < 0.8 else { return nil }
+        return String(format: "%.0f cm from the middle of the view. Step back to 1 m or more, with the surroundings in view, for a sharper result.", distance * 100)
+    }
+
+    /// Light that clips is lost for good: nothing in training can bring back the detail of a window or a shiny
+    /// floor that was recorded as pure white.
+    private var clippingHint: String? {
+        guard blownOutShare > 0.04 else { return nil }
+        return String(format: "%.0f%% of the view is blown out to white. Lower the exposure with the slider so windows and reflections keep their detail.", blownOutShare * 100)
+    }
+
     private var canFinish: Bool {
         frameCount >= GaussianCaptureWriter.minimumFrames
     }
@@ -170,7 +303,7 @@ struct GaussianCaptureView: View {
     private var captureStateLabel: String {
         if isFinishing { return "Saving dataset" }
         if isRecording { return "Recording views" }
-        return "Ready"
+        return cameraState
     }
 
     private var errorIsPresented: Binding<Bool> {
@@ -227,30 +360,40 @@ private struct LocalGaussianCameraSurface: UIViewRepresentable {
     let maximumDepth: Float
     let onProgress: (GaussianCaptureProgress) -> Void
     let onFinish: (Result<LocalGaussianCapturePackage, Error>) -> Void
+    let onCameraState: (String) -> Void
+    let onDistance: (Float?) -> Void
+    let onClipping: (Float) -> Void
+    let onHDR: (CaptureHDRReport) -> Void
+    let onHighRes: (CaptureHDRReport) -> Void
+    let exposureBias: Float
+    let hdr: Bool
+    let highRes: Bool
 
     func makeCoordinator() -> GaussianARCaptureCoordinator {
-        GaussianARCaptureCoordinator(onProgress: onProgress, onFinish: onFinish)
+        GaussianARCaptureCoordinator(onProgress: onProgress, onFinish: onFinish,
+                                     onCameraState: onCameraState, onDistance: onDistance, onClipping: onClipping,
+                                     onHDR: onHDR, onHighRes: onHighRes)
     }
 
     func makeUIView(context: Context) -> ARView {
         let view = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
+        view.environment.background = .cameraFeed()
         context.coordinator.attach(to: view.session)
-
-        let configuration = ARWorldTrackingConfiguration()
-        configuration.worldAlignment = .gravity
-        configuration.isAutoFocusEnabled = true
-        if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
-            configuration.frameSemantics.insert(.smoothedSceneDepth)
-        } else if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
-            configuration.frameSemantics.insert(.sceneDepth)
-        }
-        view.session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+        context.coordinator.applyExposureBias(exposureBias)
+        context.coordinator.runSession(hdr: hdr, highRes: highRes)
         return view
     }
 
     func updateUIView(_ view: ARView, context: Context) {
         context.coordinator.onProgress = onProgress
         context.coordinator.onFinish = onFinish
+        context.coordinator.onCameraState = onCameraState
+        context.coordinator.onDistance = onDistance
+        context.coordinator.onClipping = onClipping
+        context.coordinator.onHDR = onHDR
+        context.coordinator.onHighRes = onHighRes
+        context.coordinator.applyExposureBias(exposureBias)
+        context.coordinator.setCaptureMode(hdr: hdr, highRes: highRes)
         context.coordinator.configureSeedCloud(
             density: seedDensity,
             minimumConfidence: minimumConfidence,
@@ -266,6 +409,15 @@ private struct LocalGaussianCameraSurface: UIViewRepresentable {
     }
 }
 
+/// What the HDR switch did, for the line under it.
+nonisolated struct CaptureHDRReport: Sendable {
+    var text: String
+    /// The camera is delivering HDR frames.
+    var isActive: Bool
+    /// HDR could not be used and the session went back to the standard camera, so the switch should turn off.
+    var fellBack = false
+}
+
 private nonisolated struct GaussianCaptureProgress: Sendable {
     let frameCount: Int
     let pointCount: Int
@@ -275,6 +427,11 @@ private nonisolated struct GaussianCaptureProgress: Sendable {
 private nonisolated final class GaussianARCaptureCoordinator: NSObject, ARSessionDelegate, @unchecked Sendable {
     var onProgress: (GaussianCaptureProgress) -> Void
     var onFinish: (Result<LocalGaussianCapturePackage, Error>) -> Void
+    var onCameraState: (String) -> Void
+    var onDistance: (Float?) -> Void
+    var onClipping: (Float) -> Void
+    var onHDR: (CaptureHDRReport) -> Void
+    var onHighRes: (CaptureHDRReport) -> Void
 
     private enum Mode {
         case idle
@@ -297,17 +454,249 @@ private nonisolated final class GaussianARCaptureCoordinator: NSObject, ARSessio
     private var minimumConfidence = 2
     private var maximumDepth: Float = 5
 
+    private var lastStateReport: TimeInterval = 0
+    /// Sharpness of recent frames that were otherwise ready to be saved, to tell a blurred one from the usual.
+    private var sharpnessHistory: [Float] = []
+    private var lastAcceptTime: TimeInterval = 0
+    private var skippedForBlur = 0
+    private var lastBlurReport: TimeInterval = 0
+    private var lastDistanceReport: TimeInterval = 0
+    private var lastStateText = ""
+    private var watchdog: DispatchWorkItem?
+    private var framesSeen = 0
+    /// The session whose camera this coordinator configures.
+    private weak var session: ARSession?
+    /// What the running session was last started with, so a screen update does not restart it; main thread only.
+    private var requestedHDR: Bool?
+    private var requestedHighRes: Bool?
+    /// Camera-queue copies: HDR was asked for and a format that supports it was found, and the time after which the
+    /// next frame says what the camera really delivers (frames from before the restart arrive for a moment).
+    private var hdrRequested = false
+    private var formatReportDue: TimeInterval?
+    private var hdrFormatSummary = ""
+    /// Camera-queue state of the high-resolution photo mode: it is on, the first photo has been reported, and how
+    /// many requests in a row failed (three failures put the capture back on video frames).
+    private var highResActive = false
+    private var highResReported = false
+    private var highResFailures = 0
+    private var highResRequestedAt: TimeInterval = 0
+
     init(
         onProgress: @escaping (GaussianCaptureProgress) -> Void,
-        onFinish: @escaping (Result<LocalGaussianCapturePackage, Error>) -> Void
+        onFinish: @escaping (Result<LocalGaussianCapturePackage, Error>) -> Void,
+        onCameraState: @escaping (String) -> Void,
+        onDistance: @escaping (Float?) -> Void,
+        onClipping: @escaping (Float) -> Void,
+        onHDR: @escaping (CaptureHDRReport) -> Void,
+        onHighRes: @escaping (CaptureHDRReport) -> Void
     ) {
         self.onProgress = onProgress
         self.onFinish = onFinish
+        self.onCameraState = onCameraState
+        self.onDistance = onDistance
+        self.onClipping = onClipping
+        self.onHDR = onHDR
+        self.onHighRes = onHighRes
+    }
+
+    private var requestedExposureBias: Float?
+    private var appliedExposureBias: Float?
+
+    /// Sets the camera's exposure compensation. The automatic exposure stays on; it just aims lower or higher.
+    func applyExposureBias(_ stops: Float, force: Bool = false) {
+        requestedExposureBias = stops
+        guard force || appliedExposureBias != stops else { return }
+        guard let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else { return }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            let bias = min(max(stops, device.minExposureTargetBias), device.maxExposureTargetBias)
+            device.setExposureTargetBias(bias, completionHandler: nil)
+            appliedExposureBias = stops
+        } catch {
+            print("[capture] could not set the exposure compensation: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: Session
+
+    /// (Re)starts the AR session. With `hdr`, the video format is one that supports HDR, as close to the usual
+    /// one as possible, because ARKit only captures HDR when the format allows it.
+    func runSession(hdr: Bool, highRes: Bool = false) {
+        guard let session else { return }
+        let configuration = ARWorldTrackingConfiguration()
+        configuration.worldAlignment = .gravity
+        configuration.isAutoFocusEnabled = true
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+            configuration.frameSemantics.insert(.smoothedSceneDepth)
+        } else if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+            configuration.frameSemantics.insert(.sceneDepth)
+        }
+
+        // High-resolution photos need ARKit's format for high-resolution frame capture.
+        let photoFormat = highRes ? ARWorldTrackingConfiguration.recommendedVideoFormatForHighResolutionFrameCapturing : nil
+        if let photoFormat { configuration.videoFormat = photoFormat }
+
+        var hdrFormat: ARConfiguration.VideoFormat?
+        var summary = ""
+        if hdr {
+            if let photoFormat {
+                hdrFormat = photoFormat.isVideoHDRSupported ? photoFormat : nil
+            } else {
+                hdrFormat = Self.hdrVideoFormat(near: configuration.videoFormat)
+            }
+            if let hdrFormat {
+                configuration.videoFormat = hdrFormat
+                configuration.videoHDRAllowed = true
+                summary = Self.describe(hdrFormat)
+            }
+        }
+        print("[capture] starting the camera, HDR requested: \(hdr), high-resolution photos requested: \(highRes), format: \(Self.describe(configuration.videoFormat)), HDR format found: \(hdrFormat != nil), photo format found: \(photoFormat != nil)")
+
+        let usesHDR = hdrFormat != nil
+        let usesPhotos = photoFormat != nil
+        requestedHDR = hdr
+        requestedHighRes = highRes
+        cameraQueue.async { [weak self] in
+            self?.hdrRequested = usesHDR
+            self?.hdrFormatSummary = summary
+            self?.highResActive = usesPhotos
+            self?.highResReported = false
+            self?.highResFailures = 0
+            // Report on the first frame after the camera has had time to restart.
+            self?.formatReportDue = (hdr || highRes) ? ProcessInfo.processInfo.systemUptime + 1.5 : nil
+        }
+        session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+
+        if hdr && !usesHDR {
+            let why = highRes ? "HDR is not available with high-resolution photos on this iPhone." : "This iPhone has no HDR video format."
+            emit(CaptureHDRReport(text: why + " Using the standard camera.", isActive: false, fellBack: true))
+        } else if usesHDR {
+            emit(CaptureHDRReport(text: "Starting HDR video (\(summary))…", isActive: false))
+        }
+        if highRes && !usesPhotos {
+            emitHighRes(CaptureHDRReport(text: "This iPhone cannot take high-resolution photos while tracking. Using video frames.",
+                                         isActive: false, fellBack: true))
+        } else if usesPhotos {
+            emitHighRes(CaptureHDRReport(text: "Starting high-resolution photos (camera \(Self.describe(configuration.videoFormat)))…", isActive: false))
+        }
+
+        // ARKit may set the camera up again once it starts delivering frames, which drops the exposure bias.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, let stops = requestedExposureBias else { return }
+            applyExposureBias(stops, force: true)
+        }
+    }
+
+    /// Tells the screen, after the current view update: the callback changes its state.
+    private func emit(_ report: CaptureHDRReport) {
+        DispatchQueue.main.async { [weak self] in self?.onHDR(report) }
+    }
+
+    private func emitHighRes(_ report: CaptureHDRReport) {
+        DispatchQueue.main.async { [weak self] in self?.onHighRes(report) }
+    }
+
+    /// Switches HDR and high-resolution photos by restarting the session. Only used between captures.
+    func setCaptureMode(hdr: Bool, highRes: Bool) {
+        guard requestedHDR != hdr || requestedHighRes != highRes else { return }
+        runSession(hdr: hdr, highRes: highRes)
+    }
+
+    /// The video format with HDR support closest to `current` in size, then in frame rate, on the same camera.
+    private static func hdrVideoFormat(near current: ARConfiguration.VideoFormat) -> ARConfiguration.VideoFormat? {
+        func area(_ format: ARConfiguration.VideoFormat) -> CGFloat {
+            format.imageResolution.width * format.imageResolution.height
+        }
+        return ARWorldTrackingConfiguration.supportedVideoFormats
+            .filter {
+                $0.isVideoHDRSupported && $0.captureDevicePosition == current.captureDevicePosition
+                    && $0.captureDeviceType == current.captureDeviceType
+            }
+            .min { lhs, rhs in
+                let l = (abs(area(lhs) - area(current)), abs(lhs.framesPerSecond - current.framesPerSecond))
+                let r = (abs(area(rhs) - area(current)), abs(rhs.framesPerSecond - current.framesPerSecond))
+                return l < r
+            }
+    }
+
+    private static func describe(_ format: ARConfiguration.VideoFormat) -> String {
+        "\(Int(format.imageResolution.width))×\(Int(format.imageResolution.height)) at \(format.framesPerSecond) fps"
+    }
+
+    /// Says what the camera delivers, once per start: the pixel format of the frames and whether the device has
+    /// HDR video on. Printed as well, so a log shows it.
+    private func reportFormat(of frame: ARFrame) {
+        let buffer = frame.capturedImage
+        let type = CVPixelBufferGetPixelFormatType(buffer)
+        let name = Self.fourCharacterCode(type)
+        let transfer = (CVBufferCopyAttachment(buffer, kCVImageBufferTransferFunctionKey, nil) as? String) ?? "none"
+        let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera
+        let deviceHDR = device?.isVideoHDREnabled ?? false
+        let headroom = CIImage(cvPixelBuffer: buffer).contentHeadroom
+        let hdrFrames = GaussianFrameSnapshotBuilder.isHighDynamicRange(buffer)
+        print("[capture] frames are \(name) \(CVPixelBufferGetWidth(buffer))×\(CVPixelBufferGetHeight(buffer)), transfer \(transfer), device HDR video: \(deviceHDR), content headroom \(headroom)")
+
+        let report: CaptureHDRReport
+        if hdrFrames {
+            report = CaptureHDRReport(text: "HDR video on: \(hdrFormatSummary), \(name) frames (\(transfer)), tone-mapped when saved.", isActive: true)
+        } else if deviceHDR {
+            report = CaptureHDRReport(text: "HDR video on: \(hdrFormatSummary), but ARKit still hands over standard \(name) frames.", isActive: true)
+        } else {
+            report = CaptureHDRReport(text: "HDR was asked for but the camera reports it off (\(name) frames). Nothing is gained.", isActive: false)
+        }
+        emit(report)
+    }
+
+    static func fourCharacterCode(_ code: OSType) -> String {
+        let bytes = [UInt8((code >> 24) & 255), UInt8((code >> 16) & 255), UInt8((code >> 8) & 255), UInt8(code & 255)]
+        return String(bytes: bytes, encoding: .ascii) ?? String(code)
     }
 
     func attach(to session: ARSession) {
+        self.session = session
         session.delegate = self
         session.delegateQueue = cameraQueue
+        // No frame within a few seconds means the preview will be black: say why it might be.
+        let check = DispatchWorkItem { [weak self] in
+            guard let self, framesSeen == 0 else { return }
+            reportState("No camera image. Check Settings › Privacy › Camera, and close other apps using the camera.")
+        }
+        watchdog = check
+        cameraQueue.asyncAfter(deadline: .now() + 3, execute: check)
+    }
+
+    private func reportState(_ text: String) {
+        guard text != lastStateText else { return }
+        lastStateText = text
+        DispatchQueue.main.async { [weak self] in self?.onCameraState(text) }
+    }
+
+    func sessionWasInterrupted(_ session: ARSession) {
+        reportState("Camera interrupted")
+    }
+
+    func sessionInterruptionEnded(_ session: ARSession) {
+        reportState("Camera resumed")
+    }
+
+    func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
+        reportState(Self.describe(camera.trackingState))
+    }
+
+    private static func describe(_ state: ARCamera.TrackingState) -> String {
+        switch state {
+        case .normal: return "Ready"
+        case .notAvailable: return "Tracking not available"
+        case .limited(let reason):
+            switch reason {
+            case .initializing: return "Starting tracking… move the phone slowly"
+            case .excessiveMotion: return "Moving too fast"
+            case .insufficientFeatures: return "Not enough detail in view"
+            case .relocalizing: return "Relocalizing…"
+            @unknown default: return "Tracking limited"
+            }
+        }
     }
 
     func setRecording(_ shouldRecord: Bool) {
@@ -346,6 +735,13 @@ private nonisolated final class GaussianARCaptureCoordinator: NSObject, ARSessio
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         autoreleasepool {
+            if framesSeen == 0 { reportState(Self.describe(frame.camera.trackingState)) }
+            framesSeen += 1
+            if let due = formatReportDue, frame.timestamp >= due {
+                formatReportDue = nil
+                reportFormat(of: frame)
+            }
+            reportDistance(frame)
             guard mode == .recording,
                   !writePending,
                   frame.camera.trackingState.isCaptureReady,
@@ -354,11 +750,29 @@ private nonisolated final class GaussianARCaptureCoordinator: NSObject, ARSessio
                 return
             }
 
+            // Skip a frame that is blurrier than the ones around it: a blurred photo makes the whole splat
+            // softer. The next sharp moment follows within a fraction of a second.
+            let sharpness = Self.sharpness(of: frame.capturedImage)
+            guard isSharpEnough(sharpness, at: frame.timestamp) else {
+                skippedForBlur += 1
+                if frame.timestamp - lastBlurReport >= 0.6 {
+                    lastBlurReport = frame.timestamp
+                    report("Moving too fast: slow down for sharper views.")
+                }
+                return
+            }
+
+            if highResActive {
+                requestPhoto(during: frame, sharpness: sharpness)
+                return
+            }
+
             guard let snapshot = snapshotBuilder.copySnapshot(
                 from: frame,
                 seedDensity: seedDensity,
                 minimumConfidence: minimumConfidence,
-                maximumDepth: maximumDepth
+                maximumDepth: maximumDepth,
+                sharpness: sharpness
             ) else {
                 report("Waiting for a stable camera image.")
                 return
@@ -368,34 +782,120 @@ private nonisolated final class GaussianARCaptureCoordinator: NSObject, ARSessio
             // camera CVPixelBuffers are retained by the writer queue.
             previousPose = frame.camera.transform
             previousTimestamp = frame.timestamp
-            writePending = true
-            let nextIndex = acceptedFrames
-            let destination = writer
+            lastAcceptTime = frame.timestamp
+            commit(snapshot)
+        }
+    }
 
-            writerQueue.async { [weak self] in
-                do {
-                    try destination?.append(snapshot, index: nextIndex)
-                    self?.cameraQueue.async { [weak self] in
-                        guard let self, mode == .recording else { return }
-                        acceptedFrames += 1
-                        acceptedPoints += snapshot.points.count
-                        writePending = false
-                        report("View \(acceptedFrames) saved. Keep moving steadily.")
-                    }
-                } catch {
-                    self?.cameraQueue.async { [weak self] in
-                        self?.writePending = false
-                        self?.abort(with: error)
-                    }
+    /// Hands a finished view to the writer, one at a time.
+    private func commit(_ snapshot: GaussianFrameSnapshot) {
+        writePending = true
+        let nextIndex = acceptedFrames
+        let destination = writer
+
+        writerQueue.async { [weak self] in
+            do {
+                try destination?.append(snapshot, index: nextIndex)
+                self?.cameraQueue.async { [weak self] in
+                    guard let self, mode == .recording else { return }
+                    acceptedFrames += 1
+                    acceptedPoints += snapshot.points.count
+                    writePending = false
+                    report("View \(acceptedFrames) saved. Keep moving steadily.")
+                }
+            } catch {
+                self?.cameraQueue.async { [weak self] in
+                    self?.writePending = false
+                    self?.abort(with: error)
                 }
             }
         }
     }
 
+    /// Asks the camera for a full-resolution photo now. The LiDAR seed points come from the video frame the request
+    /// was made on; the photo brings its own pose and calibration. The next request waits for this one to be written.
+    private func requestPhoto(during frame: ARFrame, sharpness: Float) {
+        guard let session else { return }
+        let points = snapshotBuilder.seedPoints(
+            from: frame, seedDensity: seedDensity, minimumConfidence: minimumConfidence, maximumDepth: maximumDepth)
+        previousPose = frame.camera.transform
+        previousTimestamp = frame.timestamp
+        lastAcceptTime = frame.timestamp
+        writePending = true
+        highResRequestedAt = ProcessInfo.processInfo.systemUptime
+        let completion: (ARFrame?, Error?) -> Void = { [weak self] photo, error in
+            self?.cameraQueue.async { [weak self] in
+                guard let self else { return }
+                guard mode == .recording else { writePending = false; return }
+                guard let photo, error == nil,
+                      let snapshot = snapshotBuilder.copySnapshot(
+                        from: photo, seedDensity: seedDensity, minimumConfidence: minimumConfidence,
+                        maximumDepth: maximumDepth, sharpness: sharpness, seedPoints: points)
+                else {
+                    writePending = false
+                    highResFailures += 1
+                    print("[capture] high-resolution photo failed (\(highResFailures)): \(error?.localizedDescription ?? "no image")")
+                    if highResFailures >= 3 {
+                        highResActive = false
+                        emitHighRes(CaptureHDRReport(text: "High-resolution photos kept failing. Using video frames.", isActive: false, fellBack: true))
+                    }
+                    return
+                }
+                highResFailures = 0
+                if !highResReported {
+                    highResReported = true
+                    let ms = (ProcessInfo.processInfo.systemUptime - highResRequestedAt) * 1000
+                    print("[capture] first high-resolution photo \(snapshot.width)×\(snapshot.height) after \(Int(ms)) ms, \(snapshot.jpeg.count / 1024) KB")
+                    emitHighRes(CaptureHDRReport(text: "High-resolution photos on: \(snapshot.width)×\(snapshot.height), \(Int(ms)) ms to take one.", isActive: true))
+                }
+                previousPose = photo.camera.transform
+                commit(snapshot)
+            }
+        }
+        if Self.canSilenceShutter,
+           let format = (session.configuration as? ARWorldTrackingConfiguration)?.videoFormat {
+            // Without this every photo plays the camera sound. A new settings object each time: one cannot be reused.
+            let settings = AVCapturePhotoSettings(from: format.defaultPhotoSettings)
+            settings.isShutterSoundSuppressionEnabled = true
+            session.captureHighResolutionFrame(using: settings, completion: completion)
+        } else {
+            session.captureHighResolutionFrame(completion: completion)
+        }
+    }
+
+    /// Whether the shutter sound may be turned off here. Some countries require it (the photo output then says no, and
+    /// asking for silence anyway would stop the app), so the sound stays on there.
+    private static let canSilenceShutter: Bool = {
+        let allowed = AVCapturePhotoOutput().isShutterSoundSuppressionSupported
+        print("[capture] the shutter sound can be turned off on this iPhone: \(allowed)")
+        return allowed
+    }()
+
     func session(_ session: ARSession, didFailWithError error: Error) {
         cameraQueue.async { [weak self] in
-            guard self?.mode == .recording else { return }
-            self?.abort(with: error)
+            guard let self else { return }
+            reportState("Camera error: \(error.localizedDescription)")
+            if mode == .recording {
+                abort(with: error)
+            } else if hdrRequested || highResActive {
+                // The HDR or high-resolution format did not start (a LiDAR or tracking mode it cannot run with, say): go back.
+                let hadHDR = hdrRequested, hadPhotos = highResActive
+                hdrRequested = false
+                highResActive = false
+                print("[capture] the special camera format failed: \(error.localizedDescription)")
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    runSession(hdr: false, highRes: false)
+                    if hadHDR {
+                        emit(CaptureHDRReport(text: "HDR video did not start: \(error.localizedDescription) Using the standard camera.",
+                                              isActive: false, fellBack: true))
+                    }
+                    if hadPhotos {
+                        emitHighRes(CaptureHDRReport(text: "High-resolution photos did not start: \(error.localizedDescription) Using video frames.",
+                                                     isActive: false, fellBack: true))
+                    }
+                }
+            }
         }
     }
 
@@ -407,6 +907,9 @@ private nonisolated final class GaussianARCaptureCoordinator: NSObject, ARSessio
             acceptedFrames = 0
             acceptedPoints = 0
             writePending = false
+            sharpnessHistory.removeAll()
+            lastAcceptTime = 0
+            skippedForBlur = 0
             mode = .recording
             report("Move steadily around the subject.")
         } catch {
@@ -446,6 +949,83 @@ private nonisolated final class GaussianARCaptureCoordinator: NSObject, ARSessio
         deliver(.failure(error))
     }
 
+    /// Accepts a frame unless it is clearly blurrier than the sharp frames of the last few seconds. The
+    /// reference is the 75th percentile of recent frames, so a plain wall does not set it; after two
+    /// seconds without a saved frame the bar drops, so a dim room still gets captured.
+    private func isSharpEnough(_ sharpness: Float, at timestamp: TimeInterval) -> Bool {
+        sharpnessHistory.append(sharpness)
+        if sharpnessHistory.count > 90 { sharpnessHistory.removeFirst(sharpnessHistory.count - 90) }
+        guard sharpnessHistory.count >= 12 else { return true }
+        let sorted = sharpnessHistory.sorted()
+        let reference = sorted[sorted.count * 3 / 4]
+        let waited = lastAcceptTime == 0 ? 0 : timestamp - lastAcceptTime
+        let share: Float = waited > 2 ? 0.5 : 0.72
+        return sharpness >= reference * share
+    }
+
+    /// Mean gradient of the luma plane on a sparse grid (about 170k samples), 0...1. Comparable between
+    /// frames of the same scene, not between scenes.
+    static func sharpness(of pixelBuffer: CVPixelBuffer) -> Float {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        // A pixel format this does not know reads as sharp, so nothing is skipped.
+        guard let luma = LumaPlane(pixelBuffer) else { return 1 }
+        var total = 0, count = 0
+        for y in Swift.stride(from: 4, to: luma.height - 4, by: 4) {
+            for x in Swift.stride(from: 4, to: luma.width - 4, by: 4) {
+                total += abs(luma.value(x: x + 2, y: y) - luma.value(x: x - 2, y: y))
+                    + abs(luma.value(x: x, y: y + 2) - luma.value(x: x, y: y - 2))
+                count += 1
+            }
+        }
+        return count > 0 ? Float(total) / Float(count) / 255 : 1
+    }
+
+    /// Tells the screen how far the middle of the view is, about twice a second.
+    private func reportDistance(_ frame: ARFrame) {
+        guard frame.timestamp - lastDistanceReport >= 0.5 else { return }
+        lastDistanceReport = frame.timestamp
+        var distance: Float?
+        if let depth = frame.smoothedSceneDepth ?? frame.sceneDepth {
+            let map = depth.depthMap
+            CVPixelBufferLockBaseAddress(map, .readOnly)
+            if CVPixelBufferGetPixelFormatType(map) == kCVPixelFormatType_DepthFloat32,
+               let base = CVPixelBufferGetBaseAddress(map)?.assumingMemoryBound(to: Float32.self) {
+                let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map)
+                let stride = CVPixelBufferGetBytesPerRow(map) / MemoryLayout<Float32>.stride
+                var values: [Float] = []
+                for y in Swift.stride(from: h * 2 / 5, to: h * 3 / 5, by: 3) {
+                    for x in Swift.stride(from: w * 2 / 5, to: w * 3 / 5, by: 3) {
+                        let z = base[y * stride + x]
+                        if z.isFinite, z > 0.05 { values.append(z) }
+                    }
+                }
+                if !values.isEmpty { distance = values.sorted()[values.count / 2] }
+            }
+            CVPixelBufferUnlockBaseAddress(map, .readOnly)
+        }
+        let blown = Self.blownOutShare(of: frame.capturedImage)
+        DispatchQueue.main.async { [weak self] in
+            self?.onDistance(distance)
+            self?.onClipping(blown)
+        }
+    }
+
+    /// Share of the luma plane at or above 250 of 255, on a sparse grid.
+    static func blownOutShare(of pixelBuffer: CVPixelBuffer) -> Float {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let luma = LumaPlane(pixelBuffer) else { return 0 }
+        var bright = 0, count = 0
+        for y in Swift.stride(from: 0, to: luma.height, by: 8) {
+            for x in Swift.stride(from: 0, to: luma.width, by: 8) {
+                if luma.value(x: x, y: y) >= 250 { bright += 1 }
+                count += 1
+            }
+        }
+        return count > 0 ? Float(bright) / Float(count) : 0
+    }
+
     private func shouldAccept(_ frame: ARFrame) -> Bool {
         guard let previousPose else { return true }
         guard frame.timestamp - previousTimestamp >= 0.32 else { return false }
@@ -479,6 +1059,48 @@ private nonisolated final class GaussianARCaptureCoordinator: NSObject, ARSessio
     }
 }
 
+/// The luma plane of a camera frame, read as 0...255 whatever the bit depth: the standard 8-bit frames and the
+/// 10-bit ones HDR video may use. The buffer must stay locked while this is used.
+private nonisolated struct LumaPlane {
+    let width: Int
+    let height: Int
+    private let bytes: UnsafePointer<UInt8>?
+    private let words: UnsafePointer<UInt16>?
+    private let stride: Int
+    private let isVideoRange: Bool
+
+    init?(_ buffer: CVPixelBuffer) {
+        guard CVPixelBufferGetPlaneCount(buffer) > 0,
+              let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return nil }
+        switch CVPixelBufferGetPixelFormatType(buffer) {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
+            bytes = UnsafePointer(base.assumingMemoryBound(to: UInt8.self))
+            words = nil
+            stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        case kCVPixelFormatType_420YpCbCr10BiPlanarFullRange, kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange:
+            bytes = nil
+            words = UnsafePointer(base.assumingMemoryBound(to: UInt16.self))
+            stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0) / 2
+        default:
+            return nil
+        }
+        isVideoRange = [kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange]
+            .contains(CVPixelBufferGetPixelFormatType(buffer))
+        width = CVPixelBufferGetWidthOfPlane(buffer, 0)
+        height = CVPixelBufferGetHeightOfPlane(buffer, 0)
+    }
+
+    func value(x: Int, y: Int) -> Int {
+        if let words {
+            // 10 bits, stored in the top of a 16-bit word. Video range is 64...940 of 1023.
+            let word = Int(words[y * stride + x])
+            return isVideoRange ? min(max((word - 4096) * 255 / 56064, 0), 255) : word >> 8
+        }
+        let byte = Int(bytes![y * stride + x])
+        return isVideoRange ? min(max((byte - 16) * 255 / 219, 0), 255) : byte
+    }
+}
+
 private nonisolated struct GaussianFrameSnapshot: Sendable {
     let jpeg: Data
     let width: Int
@@ -489,6 +1111,14 @@ private nonisolated struct GaussianFrameSnapshot: Sendable {
     let cy: Float
     let cameraToWorldRows: [[Float]]
     let points: [GaussianSeedPoint]
+    /// Frame time on the capture clock, and what the camera did for this frame.
+    let timestamp: TimeInterval
+    let exposureDuration: TimeInterval
+    let exposureOffset: Float
+    let sharpness: Float
+    /// Pixel format of the camera frame ("420f" for the usual 8-bit one) and whether it was HDR and tone-mapped.
+    let pixelFormat: String
+    let toneMapped: Bool
 }
 
 private nonisolated struct GaussianSeedPoint: Sendable {
@@ -498,17 +1128,65 @@ private nonisolated struct GaussianSeedPoint: Sendable {
 
 private nonisolated final class GaussianFrameSnapshotBuilder: @unchecked Sendable {
     private let context = CIContext(options: [.cacheIntermediates: false])
+    /// HDR frames go through half-float intermediates so values above white survive until the tone mapping.
+    private let hdrContext = CIContext(options: [
+        .cacheIntermediates: false,
+        .workingFormat: Int(CIFormat.RGBAh.rawValue),
+    ])
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
 
+    /// How far above SDR white the camera's HDR signal reaches: HLG peaks at 1000 nits against a reference white of
+    /// 203, the 4.93 Core Image reports for an HLG buffer. Set explicitly, because the filter clips early without it,
+    /// and fixed, so every view of a capture is mapped the same way.
+    private static let sourceHeadroom: Float = 4.93
+
+    /// True for frames that carry more than SDR range: an HLG or PQ transfer function, or a 10-bit format with none.
+    static func isHighDynamicRange(_ buffer: CVPixelBuffer) -> Bool {
+        let transfer = CVBufferCopyAttachment(buffer, kCVImageBufferTransferFunctionKey, nil) as? String
+        if let transfer {
+            return transfer == kCVImageBufferTransferFunction_ITU_R_2100_HLG as String
+                || transfer == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String
+        }
+        let type = CVPixelBufferGetPixelFormatType(buffer)
+        return type == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+            || type == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+    }
+
+    /// The LiDAR seed points of a video frame.
+    func seedPoints(from frame: ARFrame, seedDensity: Float, minimumConfidence: Int, maximumDepth: Float) -> [GaussianSeedPoint] {
+        copySeedPoints(
+            depth: frame.smoothedSceneDepth ?? frame.sceneDepth,
+            image: frame.capturedImage,
+            intrinsics: frame.camera.intrinsics,
+            cameraToWorld: frame.camera.transform,
+            seedDensity: seedDensity,
+            minimumConfidence: minimumConfidence,
+            maximumDepth: maximumDepth
+        )
+    }
+
+    /// The view for `frame`. `seedPoints` replaces the frame's own LiDAR points: a high-resolution photo carries no
+    /// depth, so its points come from the video frame the photo was requested on.
     func copySnapshot(
         from frame: ARFrame,
         seedDensity: Float,
         minimumConfidence: Int,
-        maximumDepth: Float
+        maximumDepth: Float,
+        sharpness: Float,
+        seedPoints: [GaussianSeedPoint]? = nil
     ) -> GaussianFrameSnapshot? {
         let pixelBuffer = frame.capturedImage
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-        guard let jpeg = context.jpegRepresentation(
+        var image = CIImage(cvPixelBuffer: pixelBuffer)
+        // An 8-bit JPEG cannot hold HDR: roll the highlights into SDR range instead of letting them clip.
+        let toneMapped = Self.isHighDynamicRange(pixelBuffer)
+        if toneMapped {
+            let filter = CIFilter.toneMapHeadroom()
+            filter.inputImage = image
+            filter.sourceHeadroom = Self.sourceHeadroom
+            filter.targetHeadroom = 1
+            image = filter.outputImage ?? image
+        }
+        guard let jpeg = (toneMapped ? hdrContext : context).jpegRepresentation(
             of: image,
             colorSpace: colorSpace,
             options: [
@@ -524,6 +1202,12 @@ private nonisolated final class GaussianFrameSnapshotBuilder: @unchecked Sendabl
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let intrinsics = frame.camera.intrinsics
         let pose = frame.camera.transform
+        // A camera without a usable pose or calibration cannot be trained on (and would stop the camera list being saved).
+        let calibration = [intrinsics.columns.0.x, intrinsics.columns.1.y, intrinsics.columns.2.x, intrinsics.columns.2.y]
+        guard calibration.allSatisfy({ $0.isFinite && $0 > 0 }), pose.rowMajorValues.joined().allSatisfy(\.isFinite) else {
+            print("[capture] a frame came without a valid camera pose or focal length; skipped")
+            return nil
+        }
         return GaussianFrameSnapshot(
             jpeg: jpeg,
             width: width,
@@ -533,7 +1217,7 @@ private nonisolated final class GaussianFrameSnapshotBuilder: @unchecked Sendabl
             cx: intrinsics.columns.2.x,
             cy: intrinsics.columns.2.y,
             cameraToWorldRows: pose.rowMajorValues,
-            points: copySeedPoints(
+            points: seedPoints ?? copySeedPoints(
                 depth: frame.smoothedSceneDepth ?? frame.sceneDepth,
                 image: pixelBuffer,
                 intrinsics: intrinsics,
@@ -541,7 +1225,13 @@ private nonisolated final class GaussianFrameSnapshotBuilder: @unchecked Sendabl
                 seedDensity: seedDensity,
                 minimumConfidence: minimumConfidence,
                 maximumDepth: maximumDepth
-            )
+            ),
+            timestamp: frame.timestamp,
+            exposureDuration: frame.camera.exposureDuration,
+            exposureOffset: frame.camera.exposureOffset,
+            sharpness: sharpness,
+            pixelFormat: GaussianARCaptureCoordinator.fourCharacterCode(CVPixelBufferGetPixelFormatType(pixelBuffer)),
+            toneMapped: toneMapped
         )
     }
 
@@ -593,11 +1283,7 @@ private nonisolated final class GaussianFrameSnapshotBuilder: @unchecked Sendabl
         }
         let confidenceStride = depth.confidenceMap.map(CVPixelBufferGetBytesPerRow) ?? 0
 
-        let lumaBase: UnsafeMutablePointer<UInt8>? = {
-            guard CVPixelBufferGetPlaneCount(image) > 0 else { return nil }
-            return CVPixelBufferGetBaseAddressOfPlane(image, 0)?.assumingMemoryBound(to: UInt8.self)
-        }()
-        let lumaStride = CVPixelBufferGetPlaneCount(image) > 0 ? CVPixelBufferGetBytesPerRowOfPlane(image, 0) : 0
+        let luma = LumaPlane(image)
 
         var result: [GaussianSeedPoint] = []
         result.reserveCapacity(targetSamples)
@@ -618,7 +1304,7 @@ private nonisolated final class GaussianFrameSnapshotBuilder: @unchecked Sendabl
 
                 let sampleX = min(max(Int(imageX), 0), imageWidth - 1)
                 let sampleY = min(max(Int(imageY), 0), imageHeight - 1)
-                let luminance = lumaBase.map { $0[sampleY * lumaStride + sampleX] } ?? 160
+                let luminance = luma.map { UInt8($0.value(x: sampleX, y: sampleY)) } ?? 160
                 result.append(
                     GaussianSeedPoint(
                         position: SIMD3<Float>(world.x, world.y, world.z),
@@ -650,10 +1336,33 @@ private nonisolated final class GaussianCaptureWriter: @unchecked Sendable {
     private struct DatasetFrame: Encodable {
         let filePath: String
         let transformMatrix: [[Float]]
+        /// This frame's own camera calibration: the focal length moves a little as the camera refocuses.
+        let flX: Float
+        let flY: Float
+        let cx: Float
+        let cy: Float
+        let width: Int
+        let height: Int
+        let timestamp: Double
+        /// Left out when ARKit gives no number for it (as it can for high-resolution photos): JSON has no NaN, and one
+        /// would stop the whole camera list being saved ("isn't in the correct format").
+        let exposureDuration: Double?
+        let exposureOffset: Float?
+        let sharpness: Float?
 
         enum CodingKeys: String, CodingKey {
             case filePath = "file_path"
             case transformMatrix = "transform_matrix"
+            case flX = "fl_x"
+            case flY = "fl_y"
+            case cx
+            case cy
+            case width = "w"
+            case height = "h"
+            case timestamp
+            case exposureDuration = "exposure_duration"
+            case exposureOffset = "exposure_offset"
+            case sharpness
         }
     }
 
@@ -666,6 +1375,9 @@ private nonisolated final class GaussianCaptureWriter: @unchecked Sendable {
         let width: Int
         let height: Int
         let plyFilePath: String?
+        /// Pixel format of the camera frames and whether HDR frames were tone-mapped into the photos.
+        let pixelFormat: String
+        let hdrToneMapped: Bool
         let frames: [DatasetFrame]
 
         enum CodingKeys: String, CodingKey {
@@ -677,6 +1389,8 @@ private nonisolated final class GaussianCaptureWriter: @unchecked Sendable {
             case width = "w"
             case height = "h"
             case plyFilePath = "ply_file_path"
+            case pixelFormat = "pixel_format"
+            case hdrToneMapped = "hdr_tone_mapped"
             case frames
         }
     }
@@ -687,6 +1401,7 @@ private nonisolated final class GaussianCaptureWriter: @unchecked Sendable {
     private var frames: [DatasetFrame] = []
     private var seedPoints: [Voxel: GaussianSeedPoint] = [:]
     private var reference: GaussianFrameSnapshot?
+    private var reportedMissingValues = false
 
     init(seedDensity: Float) throws {
         self.seedDensity = min(max(seedDensity, 10), 500)
@@ -706,9 +1421,19 @@ private nonisolated final class GaussianCaptureWriter: @unchecked Sendable {
         frames.append(
             DatasetFrame(
                 filePath: "images/\(name)",
-                transformMatrix: snapshot.cameraToWorldRows
+                transformMatrix: snapshot.cameraToWorldRows,
+                flX: snapshot.fx, flY: snapshot.fy, cx: snapshot.cx, cy: snapshot.cy,
+                width: snapshot.width, height: snapshot.height,
+                timestamp: snapshot.timestamp,
+                exposureDuration: snapshot.exposureDuration.isFinite ? snapshot.exposureDuration : nil,
+                exposureOffset: snapshot.exposureOffset.isFinite ? snapshot.exposureOffset : nil,
+                sharpness: snapshot.sharpness.isFinite ? snapshot.sharpness : nil
             )
         )
+        if !reportedMissingValues, !(snapshot.exposureDuration.isFinite && snapshot.exposureOffset.isFinite && snapshot.sharpness.isFinite) {
+            reportedMissingValues = true
+            print("[capture] \(name): no number for exposure duration \(snapshot.exposureDuration), exposure offset \(snapshot.exposureOffset) or sharpness \(snapshot.sharpness); left out of the camera list")
+        }
         for point in snapshot.points {
             seedPoints[Voxel(point.position, density: seedDensity)] = point
         }
@@ -732,6 +1457,8 @@ private nonisolated final class GaussianCaptureWriter: @unchecked Sendable {
             width: reference.width,
             height: reference.height,
             plyFilePath: hasSeeds ? "points3D.ply" : nil,
+            pixelFormat: reference.pixelFormat,
+            hdrToneMapped: reference.toneMapped,
             frames: frames
         )
         let encoder = JSONEncoder()
